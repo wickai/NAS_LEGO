@@ -1,0 +1,13 @@
+python step2_beamsearch.py \
+  --data_root ./data \
+  --output_dir ./outs/slurm_job_${SLURM_JOB_ID} \
+  --max_steps 6 \
+  --beam_size 6 --keep_per_step 6 \
+  --expand_per_beam 96 \
+  --batches 2 \
+  --final_batches 8 \
+  --rescore_topL 5 \
+  --len_norm_beta 0.7 \
+  --batch_size 64 \
+  --seed 42 \
+  --cuda
