@@ -50,3 +50,11 @@ data/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# results
+results*
+
+# uv related
+pyproject.toml
+.uv_cache
+uv.lock
