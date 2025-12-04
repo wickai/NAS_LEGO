@@ -1,4 +1,4 @@
-python step2_beamsearch.py \
+uv run python step2_beamsearch.py \
   --data_root ./data \
   --output_dir ./outs/slurm_job_${SLURM_JOB_ID} \
   --max_steps 6 \

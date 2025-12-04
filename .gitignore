@@ -58,3 +58,6 @@ results*
 pyproject.toml
 .uv_cache
 uv.lock
+
+# out
+outs/
