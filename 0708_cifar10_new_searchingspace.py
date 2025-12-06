@@ -874,28 +874,28 @@ def main():
         if flops_m > 0:
             logging.info(f"Best Model FLOPs: {flops_m:.2f} MFLOPs")
 
-        # (6) DataLoader
-        train_loader, val_loader, test_loader = get_cifar10_dataloaders(
-            root=args.data_path,
-            batch_size=args.train_batch,
-            num_workers=2,
-            use_cutout=args.use_cutout,
-            cutout_length=args.cutout_length
-        )
+        # # (6) DataLoader
+        # train_loader, val_loader, test_loader = get_cifar10_dataloaders(
+        #     root=args.data_path,
+        #     batch_size=args.train_batch,
+        #     num_workers=2,
+        #     use_cutout=args.use_cutout,
+        #     cutout_length=args.cutout_length
+        # )
 
-        # (7) 完整训练
-        final_top1 = train_and_eval(
-            best_model,
-            train_loader,
-            val_loader,
-            test_loader,
-            device=device,
-            args=args
-        )
+        # # (7) 完整训练
+        # final_top1 = train_and_eval(
+        #     best_model,
+        #     train_loader,
+        #     val_loader,
+        #     test_loader,
+        #     device=device,
+        #     args=args
+        # )
 
-        logging.info(f"[Result] width_choices={width_set} | Final Test Top-1={final_top1*100:.2f}%\n")
+        # logging.info(f"[Result] width_choices={width_set} | Final Test Top-1={final_top1*100:.2f}%\n")
 
-    logging.info("全部实验已完成！")
+    # logging.info("全部实验已完成！")
  
     # 保存最终模型，如需要请解除注释
     # torch.save(best_model.state_dict(), os.path.join(args.log_path, "best_model.pth"))
