@@ -1,0 +1,37 @@
+{
+    "op_codes": [
+        14,
+        4,
+        11,
+        14,
+        0,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16
+    ],
+    "width_codes": [
+        2,
+        0,
+        1,
+        2,
+        2,
+        2,
+        2
+    ],
+    "fitness": 952562.0,
+    "params_mb": 0.45,
+    "note": "Generated from base arch with randomized prefix"
+}
