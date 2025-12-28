@@ -850,10 +850,13 @@ def train_and_eval(model, train_loader, val_loader, test_loader, device, args):
         train_loss = total_loss / total
         train_acc_top1 = correct_top1 / total if total > 0 else 0.
         val_top1, val_top5 = evaluate(model, val_loader, device)
+        
+        current_lr = optimizer.param_groups[0]['lr']
         scheduler.step()
 
         logging.info(f"Epoch [{epoch+1}/{epochs}] | "
                      f"Loss={train_loss:.3f}, "
+                     f"LR={current_lr:.5f}, "
                      f"Train@1={train_acc_top1*100:.2f}%, "
                      f"Val@1={val_top1*100:.2f}%, Val@5={val_top5*100:.2f}%")
 

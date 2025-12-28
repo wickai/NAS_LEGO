@@ -59,12 +59,33 @@ def main():
         arch_data = json.load(f)
     
     logging.info(f"Loaded architecture from {args.arch_path}")
-    logging.info(f"  op_codes: {arch_data['op_codes']}")
-    logging.info(f"  width_codes: {arch_data['width_codes']}")
+    
+    op_codes = arch_data.get('op_codes')
+    if op_codes is None:
+        op_codes = arch_data.get('op_codes_prefix')
+        logging.info("Using 'op_codes_prefix' from JSON.")
+    
+    if op_codes is None:
+        logging.error("No 'op_codes' or 'op_codes_prefix' found in JSON.")
+        sys.exit(1)
+        
+    width_codes = arch_data['width_codes']
+
+    logging.info(f"  op_codes: {op_codes}")
+    logging.info(f"  width_codes: {width_codes}")
     
     # Reconstruct Model
     sp = MobileNetSearchSpace(num_classes=args.num_classes, small_input=args.small_input)
-    model = sp.get_model(arch_data["op_codes"], arch_data["width_codes"])
+    
+    # Determine if we should build a prefix model or full model
+    # If op_codes length matches total blocks, build full model.
+    # Otherwise, assume it's a prefix model.
+    if len(op_codes) < sp.total_blocks:
+        logging.info(f"Building PREFIX model with {len(op_codes)} blocks (total {sp.total_blocks})")
+        model = sp.get_prefix_model(op_codes, width_codes)
+    else:
+        logging.info(f"Building FULL model with {len(op_codes)} blocks")
+        model = sp.get_model(op_codes, width_codes)
     
     # Training
     logging.info(f"Parameters: lr={args.lr}, train_batch={args.train_batch}, "
@@ -81,8 +102,8 @@ def main():
 
     # Optional: Save model weights
     save_path = os.path.join(args.log_path, "best_model.pth")
-    torch.save(model.state_dict(), save_path)
-    logging.info(f"Model weights saved to {save_path}")
+    torch.save(model, save_path)
+    logging.info(f"Model saved to {save_path}")
 
 if __name__ == "__main__":
     main()
