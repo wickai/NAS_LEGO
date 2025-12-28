@@ -2,13 +2,13 @@
 
 # Default parameters
 ARCH_PATH="./test_arch.json"
-TRAIN_EPOCHS=200
+TRAIN_EPOCHS=300
 TRAIN_BATCH=128
 LR=0.05
-LOG_NAME="train_cifar_3card.log"
+LOG_NAME="train_cifar_4card.log"
 
 # Check if --distributed flag is passed
-DISTRIBUTED=false
+DISTRIBUTED=true
 NUM_GPUS=1
 
 for arg in "$@"
@@ -27,8 +27,8 @@ done
 # If distributed, use torchrun
 if [ "$DISTRIBUTED" = true ]; then
     # Use last 4 GPUs (indices 4,5,6,7) from 8 cards
-    export CUDA_VISIBLE_DEVICES=1,2,3
-    NUM_GPUS=3
+    export CUDA_VISIBLE_DEVICES=0,1,2,3
+    NUM_GPUS=4
     echo "Running Distributed Training on GPUs $CUDA_VISIBLE_DEVICES ($NUM_GPUS cards)..."
     
     uv run torchrun --nproc_per_node=$NUM_GPUS train_cifar.py \

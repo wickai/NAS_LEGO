@@ -137,8 +137,10 @@ def main():
                      f"train_epochs={args.train_epochs}, mixup_alpha={args.mixup_alpha}, "
                      f"label_smoothing={args.label_smoothing}")
 
+    num_workers = 4 if args.distributed else 2
+    
     train_loader, val_loader, test_loader = get_cifar10_dataloaders(
-        root=args.data_path, batch_size=args.train_batch, num_workers=2,
+        root=args.data_path, batch_size=args.train_batch, num_workers=num_workers,
         use_cutout=args.use_cutout, cutout_length=args.cutout_length,
         distributed=args.distributed
     )

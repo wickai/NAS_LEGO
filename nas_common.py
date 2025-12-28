@@ -263,24 +263,33 @@ class MobileNetV2(nn.Module):
         self.classifier = nn.Linear(last_c, num_classes)
 
     def _build_ops(self, op_list):
-        def mb(k, r, se=False):
-            return lambda i, o, s, t: MBConv(i, o, k, s, r, se)
+        # 使用 partial 替代 lambda，以便支持 pickle
+        from functools import partial
+
+        def mb_builder(k, r, se, i, o, s, t):
+            return MBConv(i, o, k, s, r, se)
+
+        def skip_builder(i, o, s, t):
+            if s == 1 and i == o:
+                return nn.Identity()
+            else:
+                return nn.Sequential(
+                    nn.Conv2d(i, o, 1, stride=s, bias=False),
+                    nn.BatchNorm2d(o)
+                )
+
+        def zero_builder(i, o, s, t):
+            return Zero(s, o)
 
         self._ops = {}
         for k in (3, 5):
             for r in (1, 2, 4, 6):
                 base = f"mbconv_{k}x{k}_r{r}"
-                self._ops[base] = mb(k, r, se=False)
-                self._ops[base + "_se"] = mb(k, r, se=True)
+                self._ops[base] = partial(mb_builder, k, r, False)
+                self._ops[base + "_se"] = partial(mb_builder, k, r, True)
 
-        # 改为投影残差（不匹配时 1x1 Conv-BN）而非 Zero
-        self._ops["skip_connect"] = (
-            lambda i, o, s, t: nn.Identity() if s == 1 and i == o else nn.Sequential(
-                nn.Conv2d(i, o, 1, stride=s, bias=False),
-                nn.BatchNorm2d(o)
-            )
-        )
-        self._ops["zero"] = lambda i, o, s, t: Zero(s, o)
+        self._ops["skip_connect"] = skip_builder
+        self._ops["zero"] = zero_builder
         self.op_list = list(op_list)
 
     def _op_factory(self, name, i, o, s, t):
