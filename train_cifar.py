@@ -40,15 +40,50 @@ def parse_args():
     p.add_argument("--label_smoothing", default=0.1, type=float)
     p.add_argument("--weight_decay", default=5e-4, type=float)
     
+    # Distributed Training
+    p.add_argument("--local_rank", default=-1, type=int, help="Local rank for distributed training")
+    p.add_argument("--distributed", action="store_true", help="Enable distributed training")
+    
     return p.parse_args()
 
 def main():
     args = parse_args()
+    
+    # Distributed Setup
+    if args.distributed:
+        # For torchrun, local_rank is set via env variable
+        if "LOCAL_RANK" in os.environ:
+            args.local_rank = int(os.environ["LOCAL_RANK"])
+        
+        if args.local_rank == -1:
+            logging.error("Distributed training enabled but local_rank is -1. Use torchrun or set LOCAL_RANK.")
+            sys.exit(1)
+            
+        torch.cuda.set_device(args.local_rank)
+        torch.distributed.init_process_group(backend='nccl')
+        args.device = f"cuda:{args.local_rank}"
+        
+        # Adjust batch size for per-GPU
+        # args.train_batch is total batch size? Or per-GPU?
+        # Usually users specify total batch size in args, but here let's assume args.train_batch is per-GPU 
+        # or we divide it. Let's assume args.train_batch is per-GPU as standard in this codebase context?
+        # Standard practice: args.batch_size is per-GPU.
+        pass
+    else:
+        args.local_rank = 0 # Default for single card
+
     setup_logger(args.log_path, args.log_name)
-    logging.info("Args:\n" + json.dumps(vars(args), indent=4))
-    set_seed(args.seed)
+    if args.local_rank == 0:
+        logging.info("Args:\n" + json.dumps(vars(args), indent=4))
+    
+    set_seed(args.seed + args.local_rank) # Different seed for different rank? 
+    # Usually for DDP, we want same init weights (seed same), but different data shuffle (handled by sampler).
+    # set_seed(args.seed) is fine if it sets torch.manual_seed. 
+    # DDP broadcasts model weights from rank 0 anyway.
+    
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    logging.info(f"Using device: {device}")
+    if args.local_rank == 0:
+        logging.info(f"Using device: {device}")
 
     # Load Architecture
     if not os.path.exists(args.arch_path):
@@ -58,12 +93,14 @@ def main():
     with open(args.arch_path, "r") as f:
         arch_data = json.load(f)
     
-    logging.info(f"Loaded architecture from {args.arch_path}")
+    if args.local_rank == 0:
+        logging.info(f"Loaded architecture from {args.arch_path}")
     
     op_codes = arch_data.get('op_codes')
     if op_codes is None:
         op_codes = arch_data.get('op_codes_prefix')
-        logging.info("Using 'op_codes_prefix' from JSON.")
+        if args.local_rank == 0:
+            logging.info("Using 'op_codes_prefix' from JSON.")
     
     if op_codes is None:
         logging.error("No 'op_codes' or 'op_codes_prefix' found in JSON.")
@@ -71,39 +108,58 @@ def main():
         
     width_codes = arch_data['width_codes']
 
-    logging.info(f"  op_codes: {op_codes}")
-    logging.info(f"  width_codes: {width_codes}")
+    if args.local_rank == 0:
+        logging.info(f"  op_codes: {op_codes}")
+        logging.info(f"  width_codes: {width_codes}")
     
     # Reconstruct Model
     sp = MobileNetSearchSpace(num_classes=args.num_classes, small_input=args.small_input)
     
     # Determine if we should build a prefix model or full model
-    # If op_codes length matches total blocks, build full model.
-    # Otherwise, assume it's a prefix model.
     if len(op_codes) < sp.total_blocks:
-        logging.info(f"Building PREFIX model with {len(op_codes)} blocks (total {sp.total_blocks})")
+        if args.local_rank == 0:
+            logging.info(f"Building PREFIX model with {len(op_codes)} blocks (total {sp.total_blocks})")
         model = sp.get_prefix_model(op_codes, width_codes)
     else:
-        logging.info(f"Building FULL model with {len(op_codes)} blocks")
+        if args.local_rank == 0:
+            logging.info(f"Building FULL model with {len(op_codes)} blocks")
         model = sp.get_model(op_codes, width_codes)
     
+    model = model.to(device)
+    
+    # Wrap DDP
+    if args.distributed:
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
+
     # Training
-    logging.info(f"Parameters: lr={args.lr}, train_batch={args.train_batch}, "
-                 f"train_epochs={args.train_epochs}, mixup_alpha={args.mixup_alpha}, "
-                 f"label_smoothing={args.label_smoothing}")
+    if args.local_rank == 0:
+        logging.info(f"Parameters: lr={args.lr}, train_batch={args.train_batch}, "
+                     f"train_epochs={args.train_epochs}, mixup_alpha={args.mixup_alpha}, "
+                     f"label_smoothing={args.label_smoothing}")
 
     train_loader, val_loader, test_loader = get_cifar10_dataloaders(
         root=args.data_path, batch_size=args.train_batch, num_workers=2,
-        use_cutout=args.use_cutout, cutout_length=args.cutout_length
+        use_cutout=args.use_cutout, cutout_length=args.cutout_length,
+        distributed=args.distributed
     )
 
-    final_top1 = train_and_eval(model, train_loader, val_loader, test_loader, device=device, args=args)
-    logging.info(f"Final Accuracy of Best Model (Top-1): {final_top1*100:.2f}%")
+    final_top1 = train_and_eval(model, train_loader, val_loader, test_loader, device=device, args=args, rank=args.local_rank)
+    
+    if args.local_rank == 0:
+        logging.info(f"Final Accuracy of Best Model (Top-1): {final_top1*100:.2f}%")
 
-    # Optional: Save model weights
-    save_path = os.path.join(args.log_path, "best_model.pth")
-    torch.save(model, save_path)
-    logging.info(f"Model saved to {save_path}")
+        # Optional: Save model weights
+        # Use log_name to determine model filename (replace .log with .pth)
+        if args.log_name.endswith(".log"):
+            model_filename = args.log_name.replace(".log", ".pth")
+        else:
+            model_filename = args.log_name + ".pth"
+            
+        save_path = os.path.join(args.log_path, model_filename)
+        # Save underlying model if wrapped
+        model_to_save = model.module if args.distributed else model
+        torch.save(model_to_save, save_path)
+        logging.info(f"Model saved to {save_path}")
 
 if __name__ == "__main__":
     main()

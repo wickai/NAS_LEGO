@@ -810,7 +810,7 @@ class LayerwiseBlockES:
 
 # ============ 9) 最终训练（Cutout/Mixup/LS/Cosine） ============
 
-def train_and_eval(model, train_loader, val_loader, test_loader, device, args):
+def train_and_eval(model, train_loader, val_loader, test_loader, device, args, rank=0):
     epochs = args.train_epochs
     lr = args.lr
     mixup_alpha = args.mixup_alpha
@@ -823,6 +823,9 @@ def train_and_eval(model, train_loader, val_loader, test_loader, device, args):
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
     for epoch in range(epochs):
+        if args.distributed:
+            train_loader.sampler.set_epoch(epoch)
+            
         model.train()
         total_loss = 0
         correct_top1, total = 0, 0
@@ -849,19 +852,27 @@ def train_and_eval(model, train_loader, val_loader, test_loader, device, args):
 
         train_loss = total_loss / total
         train_acc_top1 = correct_top1 / total if total > 0 else 0.
-        val_top1, val_top5 = evaluate(model, val_loader, device)
+        
+        # Validation only on rank 0
+        val_top1, val_top5 = 0.0, 0.0
+        if rank == 0:
+            val_top1, val_top5 = evaluate(model, val_loader, device)
         
         current_lr = optimizer.param_groups[0]['lr']
         scheduler.step()
 
-        logging.info(f"Epoch [{epoch+1}/{epochs}] | "
-                     f"Loss={train_loss:.3f}, "
-                     f"LR={current_lr:.5f}, "
-                     f"Train@1={train_acc_top1*100:.2f}%, "
-                     f"Val@1={val_top1*100:.2f}%, Val@5={val_top5*100:.2f}%")
+        if rank == 0:
+            logging.info(f"Epoch [{epoch+1}/{epochs}] | "
+                         f"Loss={train_loss:.3f}, "
+                         f"LR={current_lr:.5f}, "
+                         f"Train@1={train_acc_top1*100:.2f}%, "
+                         f"Val@1={val_top1*100:.2f}%, Val@5={val_top5*100:.2f}%")
 
-    final_top1, final_top5 = evaluate(model, test_loader, device)
-    logging.info(f"Final Test Accuracy: Top1={final_top1*100:.2f}%, Top5={final_top5*100:.2f}%")
+    final_top1 = 0.0
+    if rank == 0:
+        final_top1, final_top5 = evaluate(model, test_loader, device)
+        logging.info(f"Final Test Accuracy: Top1={final_top1*100:.2f}%, Top5={final_top5*100:.2f}%")
+        
     return final_top1
 
 
@@ -869,7 +880,7 @@ def train_and_eval(model, train_loader, val_loader, test_loader, device, args):
 
 def get_cifar10_dataloaders(root, batch_size, num_workers=2,
                              use_cutout=False, cutout_length=16,
-                             val_ratio=0.1):
+                             val_ratio=0.1, distributed=False):
     transform_list = [
         transforms.RandAugment(),
         transforms.RandomCrop(32, padding=4),
@@ -902,8 +913,18 @@ def get_cifar10_dataloaders(root, batch_size, num_workers=2,
     val_ds   = torch.utils.data.Subset(full_train_ds_plain, val_indices)
     test_ds  = datasets.CIFAR10(root, train=False, download=True, transform=transform_test)
 
-    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                                               num_workers=num_workers, pin_memory=True)
+    train_sampler = None
+    if distributed:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_ds)
+
+    train_loader = torch.utils.data.DataLoader(
+        train_ds, 
+        batch_size=batch_size, 
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
+        num_workers=num_workers, 
+        pin_memory=True
+    )
     val_loader   = torch.utils.data.DataLoader(val_ds, batch_size=batch_size, shuffle=False,
                                                num_workers=num_workers, pin_memory=True)
     test_loader  = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False,
