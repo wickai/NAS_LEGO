@@ -64,3 +64,6 @@ outs/
 
 # results
 result_*/
+
+# .pth
+**/*.pth

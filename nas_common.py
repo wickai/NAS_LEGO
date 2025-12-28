@@ -215,6 +215,23 @@ class MBConv(nn.Module):
         return x + self.conv(x) if self.use_res else self.conv(x)
 
 
+# ============ Helper functions for pickle compatibility ============
+def mb_builder(k, r, se, i, o, s, t):
+    return MBConv(i, o, k, s, r, se)
+
+def skip_builder(i, o, s, t):
+    if s == 1 and i == o:
+        return nn.Identity()
+    else:
+        return nn.Sequential(
+            nn.Conv2d(i, o, 1, stride=s, bias=False),
+            nn.BatchNorm2d(o)
+        )
+
+def zero_builder(i, o, s, t):
+    return Zero(s, o)
+
+
 class MobileNetV2(nn.Module):
     """
     支持 limit_blocks（前缀截断构建）：
@@ -265,21 +282,6 @@ class MobileNetV2(nn.Module):
     def _build_ops(self, op_list):
         # 使用 partial 替代 lambda，以便支持 pickle
         from functools import partial
-
-        def mb_builder(k, r, se, i, o, s, t):
-            return MBConv(i, o, k, s, r, se)
-
-        def skip_builder(i, o, s, t):
-            if s == 1 and i == o:
-                return nn.Identity()
-            else:
-                return nn.Sequential(
-                    nn.Conv2d(i, o, 1, stride=s, bias=False),
-                    nn.BatchNorm2d(o)
-                )
-
-        def zero_builder(i, o, s, t):
-            return Zero(s, o)
 
         self._ops = {}
         for k in (3, 5):

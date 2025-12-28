@@ -2,7 +2,7 @@
 
 # Default parameters
 ARCH_PATH="./test_arch.json"
-TRAIN_EPOCHS=300
+TRAIN_EPOCHS=30
 TRAIN_BATCH=128
 LR=0.05
 LOG_NAME="train_cifar_4card.log"
