@@ -216,8 +216,13 @@ class MBConv(nn.Module):
 
 
 class MobileNetV2(nn.Module):
+    """
+    支持 limit_blocks（前缀截断构建）：
+    - 当 limit_blocks=None：构建完整网络（原行为）
+    - 当 limit_blocks=k：仅构建前 k 个 blocks 的 features，再接 head+pool+fc
+    """
     def __init__(self, op_codes, width_codes, stage_setting, op_list, width_choices,
-                 num_classes=10, small_input=True):
+                 num_classes=10, small_input=True, limit_blocks=None):
         super().__init__()
         self._build_ops(op_list)
 
@@ -229,11 +234,19 @@ class MobileNetV2(nn.Module):
             nn.ReLU6(inplace=True),
         )
 
+        # 逐 block 构建 features，尊重 limit_blocks
         layers = []
         in_c, blk_idx = stem_c, 0
+        total_blocks = sum(s[2] for s in stage_setting)
+        max_blocks = total_blocks if limit_blocks is None else max(0, min(limit_blocks, total_blocks))
+
         for stage_idx, (t, c_base, n, s) in enumerate(stage_setting):
+            if blk_idx >= max_blocks:
+                break
             out_c = int(round(c_base * width_choices[width_codes[stage_idx]]))
             for i in range(n):
+                if blk_idx >= max_blocks:
+                    break
                 stride = s if i == 0 else 1
                 op_name = op_list[op_codes[blk_idx]]
                 layers.append(self._op_factory(op_name, in_c, out_c, stride, t))
@@ -335,6 +348,7 @@ class MobileNetSearchSpace:
         return mutated
 
     def get_model(self, op_codes, width_codes):
+        # 完整模型（不截断）
         return MobileNetV2(
             op_codes=op_codes,
             width_codes=width_codes,
@@ -342,7 +356,21 @@ class MobileNetSearchSpace:
             op_list=self.op_list,
             width_choices=self.width_choices,
             num_classes=self.num_classes,
-            small_input=self.small_input
+            small_input=self.small_input,
+            limit_blocks=None
+        )
+
+    def get_prefix_model(self, op_prefix, width_codes):
+        # 仅构建前缀（前 len(op_prefix) 个 blocks）
+        return MobileNetV2(
+            op_codes=op_prefix,
+            width_codes=width_codes,
+            stage_setting=self.stage_setting,
+            op_list=self.op_list,
+            width_choices=self.width_choices,
+            num_classes=self.num_classes,
+            small_input=self.small_input,
+            limit_blocks=len(op_prefix)
         )
 
 
@@ -434,16 +462,114 @@ class EvolutionarySearch:
         return c1[:p1] + c2[p1:p2] + c1[p2:]
 
 
-# ============ 8) 逐层 Evolutionary Search（每层一个EA，仅SWAP） ============
+# ============ 7.5) Pareto Front 工具函数 ============
+
+def dominates_dict(a: dict, b: dict) -> bool:
+    """
+    a 是否支配 b
+    目标1：SWAP ↑ (越大越好)
+    目标2：ParamsMB ↓ (越小越好)
+    """
+    better_or_equal_swap = a["absolute_swap"] >= b["absolute_swap"]
+    better_or_equal_params = a["params_mb"] <= b["params_mb"]
+    strictly_better_one = (a["absolute_swap"] > b["absolute_swap"]) or (a["params_mb"] < b["params_mb"])
+    return better_or_equal_swap and better_or_equal_params and strictly_better_one
+
+
+def non_dominated_sort_dict(population: list) -> list:
+    """
+    对字典列表进行非支配排序，返回 fronts 列表
+    每个个体字典需要包含 "absolute_swap" 和 "params_mb" 字段
+    """
+    S = {}
+    n = {}
+    fronts = [[]]
+
+    for i, p in enumerate(population):
+        S[i] = []
+        n[i] = 0
+        for j, q in enumerate(population):
+            if i == j:
+                continue
+            if dominates_dict(p, q):
+                S[i].append(j)
+            elif dominates_dict(q, p):
+                n[i] += 1
+        if n[i] == 0:
+            p["rank"] = 0
+            fronts[0].append(p)
+
+    idx = 0
+    while fronts[idx]:
+        next_front = []
+        for p in fronts[idx]:
+            p_idx = population.index(p)
+            for q_idx in S[p_idx]:
+                n[q_idx] -= 1
+                if n[q_idx] == 0:
+                    population[q_idx]["rank"] = idx + 1
+                    next_front.append(population[q_idx])
+        idx += 1
+        fronts.append(next_front)
+
+    if not fronts[-1]:
+        fronts.pop()
+    return fronts
+
+
+def crowding_distance_dict(front: list) -> None:
+    """
+    计算拥挤距离（原地修改）
+    每个个体字典需要包含 "absolute_swap" 和 "params_mb" 字段
+    """
+    if len(front) == 0:
+        return
+    if len(front) == 1:
+        front[0]["crowding_distance"] = float("inf")
+        return
+    if len(front) == 2:
+        front[0]["crowding_distance"] = float("inf")
+        front[1]["crowding_distance"] = float("inf")
+        return
+
+    # 初始化
+    for ind in front:
+        ind["crowding_distance"] = 0.0
+
+    # 目标1：swap_score (越大越好)
+    front.sort(key=lambda x: x["absolute_swap"])
+    front[0]["crowding_distance"] = float("inf")
+    front[-1]["crowding_distance"] = float("inf")
+    s_min, s_max = front[0]["absolute_swap"], front[-1]["absolute_swap"]
+    s_range = s_max - s_min if s_max > s_min else 1e-9
+    for i in range(1, len(front) - 1):
+        front[i]["crowding_distance"] += (
+            (front[i + 1]["absolute_swap"] - front[i - 1]["absolute_swap"]) / s_range
+        )
+
+    # 目标2：params_mb（越小越好）
+    front.sort(key=lambda x: x["params_mb"])
+    front[0]["crowding_distance"] = float("inf")
+    front[-1]["crowding_distance"] = float("inf")
+    p_min, p_max = front[0]["params_mb"], front[-1]["params_mb"]
+    p_range = p_max - p_min if p_max > p_min else 1e-9
+    for i in range(1, len(front) - 1):
+        front[i]["crowding_distance"] += (
+            (front[i + 1]["params_mb"] - front[i - 1]["params_mb"]) / p_range
+        )
+
+
+# ============ 8) 逐层 Evolutionary Search（前缀截断评估版） ============
 
 class LayerwiseBlockES:
     """
-    逐层贪心：第 b 层上建立一个小EA，搜索该层算子（以及在该 stage 的首层可同时搜索 width）。
-    已确定的前缀固定；未决层全部以 skip_connect 占位。排序仅按 SWAP；加入退化过滤。
+    逐层贪心：在第 b 层开小EA，仅搜索该层算子（若为该stage头部可同时搜宽度）。
+    baseline/candidate 都用"前缀截断模型"评估 SWAP（不再用 skip_connect 占位）。
+    支持 pareto front 多目标优化（SWAP ↑, ParamsMB ↓）。
     """
     def __init__(self, search_space: MobileNetSearchSpace, swap_metric: SWAP, device,
                  num_inits=1, population_size=16, mutation_rate=0.3, n_generations=8,
-                 stagewise_width_search=True):
+                 stagewise_width_search=True, use_pareto=True):
         self.sp = search_space
         self.swap = swap_metric
         self.device = device
@@ -452,6 +578,7 @@ class LayerwiseBlockES:
         self.mutation_rate = mutation_rate
         self.n_generations = n_generations
         self.stagewise_width_search = stagewise_width_search
+        self.use_pareto = use_pareto  # 是否使用 pareto front
 
         # block -> stage 映射
         self.block2stage = []
@@ -459,7 +586,7 @@ class LayerwiseBlockES:
             self.block2stage += [s_idx] * n
         assert len(self.block2stage) == self.sp.total_blocks
 
-        self.skip_idx = self.sp._default_op_list().index("skip_connect")
+        self.skip_idx = self.sp._default_op_list().index("skip_connect")  # 仅用于最终补齐
         self.default_width_idx = self.sp.width_choices.index(1.0) if 1.0 in self.sp.width_choices else 0
 
     def _is_stage_head(self, b):
@@ -467,35 +594,49 @@ class LayerwiseBlockES:
         first = sum(self.sp.stage_setting[k][2] for k in range(s))
         return b == first
 
-    def _fill_codes(self, op_prefix, width_codes):
-        filled_ops = op_prefix + [self.skip_idx] * (self.sp.total_blocks - len(op_prefix))
-        return filled_ops, width_codes
-
-    def _score_codes(self, op_codes, width_codes, inputs):
-        scores = []
-        for _ in range(self.num_inits):
-            model = self.sp.get_model(op_codes, width_codes).to(self.device)
-            for p in model.parameters():
-                if p.dim() > 1:
-                    nn.init.kaiming_normal_(p)
-            if is_degenerate_head(model, inputs, self.device):
-                scores.append(-1e12)
-            else:
-                s = self.swap.evaluate(model, inputs)
-                scores.append(s)
-        fitness = float(np.mean(scores))
-        params_mb = count_parameters_in_MB(self.sp.get_model(op_codes, width_codes).to(self.device))
-        return fitness, float(params_mb)
-
-    def _build_individual(self, fixed_ops, fixed_wds, b_idx, op_gene, wd_gene):
-        op_prefix = fixed_ops + [op_gene]
+    def _score_prefix_pair(self, fixed_ops, fixed_wds, b_idx, op_gene, wd_gene, inputs):
+        """
+        返回 (fitness_log_delta, abs_swap_cand, params_mb_cand)
+        基线 = 前缀到 b 层（不含 b），候选 = 前缀到 b 层 + 本候选 block
+        """
+        # 宽度代码更新（仅在 stage 头部时生效）
         width_codes = fixed_wds[:]
         if wd_gene is not None:
             stage_idx = self.block2stage[b_idx]
             width_codes[stage_idx] = wd_gene
-        return self._fill_codes(op_prefix, width_codes)
 
-    def _per_block_ea(self, fixed_ops, fixed_wds, b_idx, inputs):
+        # 1) baseline：前缀到 b 层
+        base_model = self.sp.get_prefix_model(fixed_ops, width_codes).to(self.device)
+        for p in base_model.parameters():
+            if p.dim() > 1:
+                nn.init.kaiming_normal_(p)
+        if is_degenerate_head(base_model, inputs, self.device):
+            swap_base = 0.0
+        else:
+            swap_base = float(np.mean([
+                self.swap.evaluate(base_model, inputs) for _ in range(self.num_inits)
+            ]))
+
+        # 2) candidate：前缀到 b 层 + 候选 block
+        cand_ops = fixed_ops + [op_gene]
+        cand_model = self.sp.get_prefix_model(cand_ops, width_codes).to(self.device)
+        for p in cand_model.parameters():
+            if p.dim() > 1:
+                nn.init.kaiming_normal_(p)
+        if is_degenerate_head(cand_model, inputs, self.device):
+            swap_cand = 0.0
+        else:
+            swap_cand = float(np.mean([
+                self.swap.evaluate(cand_model, inputs) for _ in range(self.num_inits)
+            ]))
+
+        # 使用原始（绝对）SWAP作为搜索fitness
+        fitness_abs = swap_cand
+
+        params_mb = count_parameters_in_MB(cand_model)  # 前缀模型参数量
+        return fitness_abs, swap_cand, float(params_mb)
+
+    def _per_block_ea(self, fixed_ops, fixed_wds, b_idx, inputs, baseline_swap):
         stage_idx = self.block2stage[b_idx]
         op_space = list(range(len(self.sp.op_list)))
 
@@ -508,14 +649,53 @@ class LayerwiseBlockES:
         for _ in range(self.population_size):
             op_gene = random.choice(op_space)
             wd_gene = random.choice(wd_space) if wd_space is not None else None
-            oc, wc = self._build_individual(fixed_ops, fixed_wds, b_idx, op_gene, wd_gene)
-            fit, params_mb = self._score_codes(oc, wc, inputs)
-            pop.append({"op_gene": op_gene, "wd_gene": wd_gene, "fitness": fit, "params_mb": params_mb})
+            fitness_abs, abs_swap, params_mb = self._score_prefix_pair(fixed_ops, fixed_wds, b_idx, op_gene, wd_gene, inputs)
+            pop.append({
+                "op_gene": op_gene, 
+                "wd_gene": wd_gene, 
+                "fitness": fitness_abs,
+                "absolute_swap": abs_swap, 
+                "params_mb": params_mb,
+                "rank": 0,  # 初始化 rank
+                "crowding_distance": 0.0  # 初始化 crowding_distance
+            })
 
-        # 代际
+        # 迭代
         for g in range(self.n_generations):
-            pop.sort(key=lambda ind: ind["fitness"], reverse=True)  # 仅按SWAP
-            elites = pop[: self.population_size // 2]
+            if self.use_pareto:
+                # 使用 pareto front 排序
+                fronts = non_dominated_sort_dict(pop)
+                for f in fronts:
+                    crowding_distance_dict(f)
+                
+                # 选择精英（从 pareto front 0 开始，按拥挤距离排序）
+                elites = []
+                for f in fronts:
+                    if len(elites) + len(f) <= self.population_size // 2:
+                        elites.extend(f)
+                    else:
+                        f_sorted = sorted(f, key=lambda x: x.get("crowding_distance", 0.0), reverse=True)
+                        remaining = self.population_size // 2 - len(elites)
+                        elites.extend(f_sorted[:remaining])
+                        break
+                
+                # 记录 pareto front 0 的信息
+                if len(fronts) > 0 and len(fronts[0]) > 0:
+                    front0_sorted = sorted(fronts[0], key=lambda x: (-x["absolute_swap"], x["params_mb"]))
+                    best_in_front0 = front0_sorted[0]
+                    logging.info(
+                        f"  [Block-{b_idx+1}] Generation {g+1}/{self.n_generations} | "
+                        f"Front0_size={len(fronts[0])} | "
+                        f"best_swap={best_in_front0['absolute_swap']:.1f}, "
+                        f"best_params={best_in_front0['params_mb']:.3f}MB"
+                    )
+            else:
+                # 单目标优化（仅按 SWAP）
+                pop.sort(key=lambda ind: ind["fitness"], reverse=True)
+                elites = pop[: self.population_size // 2]
+                logging.info(f"  [Block-{b_idx+1}] Generation {g+1}/{self.n_generations} | best_abs={pop[0]['absolute_swap']:.1f}")
+            
+            # 生成下一代
             next_gen = elites[:]
             while len(next_gen) < self.population_size:
                 p = random.choice(elites)
@@ -524,15 +704,29 @@ class LayerwiseBlockES:
                     child["op_gene"] = self._rand_mutate(child["op_gene"], len(op_space))
                 if wd_space is not None and random.random() < self.mutation_rate:
                     child["wd_gene"] = self._rand_mutate(child["wd_gene"], len(wd_space))
-                oc, wc = self._build_individual(fixed_ops, fixed_wds, b_idx, child["op_gene"], child["wd_gene"])
-                fit, params_mb = self._score_codes(oc, wc, inputs)
-                child["fitness"], child["params_mb"] = fit, params_mb
+                fitness_abs, abs_swap, params_mb = self._score_prefix_pair(fixed_ops, fixed_wds, b_idx, child["op_gene"], child["wd_gene"], inputs)
+                child["fitness"] = fitness_abs
+                child["absolute_swap"] = abs_swap
+                child["params_mb"] = params_mb
+                child["rank"] = 0  # 重置 rank（会在下次 pareto 排序时更新）
+                child["crowding_distance"] = 0.0  # 重置 crowding_distance
                 next_gen.append(child)
             pop = next_gen
-            logging.info(f"  [Block-{b_idx+1}] Generation {g+1}/{self.n_generations} | best={pop[0]['fitness']:.3f}")
 
-        pop.sort(key=lambda ind: ind["fitness"], reverse=True)
-        return pop[0]
+        # 选择最终最优解
+        if self.use_pareto:
+            # 使用 pareto front 选择：优先选择 SWAP 最大且 params 较小的
+            fronts = non_dominated_sort_dict(pop)
+            if len(fronts) > 0 and len(fronts[0]) > 0:
+                front0_sorted = sorted(fronts[0], key=lambda x: (-x["absolute_swap"], x["params_mb"]))
+                return front0_sorted[0]
+            else:
+                # 如果 pareto front 为空，回退到单目标
+                pop.sort(key=lambda ind: ind["fitness"], reverse=True)
+                return pop[0]
+        else:
+            pop.sort(key=lambda ind: ind["fitness"], reverse=True)
+            return pop[0]
 
     @staticmethod
     def _rand_mutate(idx, space):
@@ -548,28 +742,68 @@ class LayerwiseBlockES:
         fixed_wds = [self.default_width_idx] * len(self.sp.stage_setting)
         history = []
 
+        # 计算初始 baseline（前缀长度=0 的模型）
+        base0 = self.sp.get_prefix_model([], fixed_wds).to(self.device)
+        for p in base0.parameters():
+            if p.dim() > 1:
+                nn.init.kaiming_normal_(p)
+        baseline_swap = float(np.mean([self.swap.evaluate(base0, inputs)]))
+        logging.info(f"Initial baseline SWAP (prefix=0 blocks): {baseline_swap:.1f}")
+
         for b in range(n_blocks_to_search):
             logging.info(f"=== Layer-wise EA on Block {b+1}/{n_blocks_to_search} ===")
-            best = self._per_block_ea(fixed_ops, fixed_wds, b, inputs)
+            logging.info(f"  Current baseline SWAP (prefix={b}): {baseline_swap:.1f}")
 
+            best = self._per_block_ea(fixed_ops, fixed_wds, b, inputs, baseline_swap)
+
+            # 固定本层最优
             fixed_ops.append(best["op_gene"])
             if self._is_stage_head(b) and best["wd_gene"] is not None:
                 fixed_wds[self.block2stage[b]] = best["wd_gene"]
 
-            oc_full, wc_full = self._fill_codes(fixed_ops, fixed_wds)
-            fit, params_mb = self._score_codes(oc_full, wc_full, inputs)
-            logging.info(f"[Layer-ES] Block {b+1} fixed: op={best['op_gene']}, "
-                         f"width_stage={self.block2stage[b]}->{fixed_wds[self.block2stage[b]] if self._is_stage_head(b) else 'NA'}, "
-                         f"SWAP={fit:.3f}, Params={params_mb:.2f}MB")
-            history.append({"block": b, "op": best["op_gene"], "width_codes": wc_full[:], "fitness": fit, "params_mb": params_mb})
+            # 以“前缀到 b+1 层”的模型刷新 baseline
+            prefix_model = self.sp.get_prefix_model(fixed_ops, fixed_wds).to(self.device)
+            for p in prefix_model.parameters():
+                if p.dim() > 1:
+                    nn.init.kaiming_normal_(p)
+            fit = float(np.mean([self.swap.evaluate(prefix_model, inputs)]))
+            params_mb = count_parameters_in_MB(prefix_model)
+            swap_delta_abs = fit - baseline_swap
 
-        final_ops, final_wds = self._fill_codes(fixed_ops, fixed_wds)
-        final_fit, final_params = self._score_codes(final_ops, final_wds, inputs)
+            logging.info(
+                f"[Layer-ES] Block {b+1} fixed: op={best['op_gene']}, "
+                f"width_stage={self.block2stage[b]}->{fixed_wds[self.block2stage[b]] if self._is_stage_head(b) else 'NA'}, "
+                f"SWAP(prefix)={fit:.1f}, delta_abs={swap_delta_abs:.1f}, "
+                f"Params(prefix)={params_mb:.2f}MB"
+            )
+
+            history.append({
+                "block": b,
+                "op": best["op_gene"],
+                "width_codes": fixed_wds[:],
+                "fitness_prefix": fit,
+                "swap_delta_abs": swap_delta_abs,
+                "params_mb_prefix": params_mb
+            })
+
+            baseline_swap = fit  # 更新 baseline
+
+        # 产出最终“前缀架构”（不补齐剩余 blocks）并计算一次 SWAP 与 Params，仅做记录
+        final_ops_prefix = fixed_ops[:]
+        final_wds = fixed_wds[:]
+
+        prefix_model_final = self.sp.get_prefix_model(final_ops_prefix, final_wds).to(self.device)
+        for p in prefix_model_final.parameters():
+            if p.dim() > 1:
+                nn.init.kaiming_normal_(p)
+        final_fit_prefix = float(np.mean([self.swap.evaluate(prefix_model_final, inputs)]))
+        final_params_prefix = count_parameters_in_MB(prefix_model_final)
+
         return {
-            "op_codes": final_ops,
+            "op_codes_prefix": final_ops_prefix,
             "width_codes": final_wds,
-            "fitness": final_fit,
-            "params_mb": final_params,
+            "fitness": final_fit_prefix,
+            "params_mb_prefix": final_params_prefix,
             "history": history
         }
 

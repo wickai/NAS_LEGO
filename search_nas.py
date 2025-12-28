@@ -44,6 +44,7 @@ def parse_args():
     p.add_argument("--layer_generations", default=8, type=int)
     p.add_argument("--layer_mutation", default=0.3, type=float)
     p.add_argument("--stagewise_width_search", action="store_true", default=True)
+    p.add_argument("--use_pareto", action="store_true", default=True, help="使用 pareto front 多目标优化 (SWAP ↑, ParamsMB ↓)")
     
     return p.parse_args()
 
@@ -78,7 +79,8 @@ def main():
         les = LayerwiseBlockES(
             search_space=sp, swap_metric=swap, device=device, num_inits=args.num_inits,
             population_size=args.layer_population, mutation_rate=args.layer_mutation,
-            n_generations=args.layer_generations, stagewise_width_search=args.stagewise_width_search
+            n_generations=args.layer_generations, stagewise_width_search=args.stagewise_width_search,
+            use_pareto=args.use_pareto
         )
         best = les.search(mini_inputs, n_blocks_to_search=args.n_blocks_to_search)
     else:
@@ -91,22 +93,26 @@ def main():
     t1 = time.time()
     
     # Ensure params_mb is present
-    if "params_mb" not in best:
-        model = sp.get_model(best["op_codes"], best["width_codes"])
-        best["params_mb"] = count_parameters_in_MB(model)
-
+    if "params_mb_prefix" not in best:
+        # Fallback for Global EA or if params_mb_prefix is missing
+        if "op_codes" in best:
+             model = sp.get_model(best["op_codes"], best["width_codes"])
+             best["params_mb_prefix"] = count_parameters_in_MB(model) # Note: this might be full model params
+             best["op_codes_prefix"] = best["op_codes"]
+             best["fitness"] = best["fitness"]
+    
     logging.info(f"Search finished in {t1 - t0:.2f}s.")
     logging.info(f"Best architecture | SWAP fitness={best['fitness']:.3f}")
-    logging.info(f"Best architecture | op_codes={best['op_codes']}")
+    logging.info(f"Best architecture | op_codes_prefix={best['op_codes_prefix']}")
     logging.info(f"Best architecture | width_codes={best['width_codes']}")
-    logging.info(f"Best Model param: {best['params_mb']:.2f} MB")
+    logging.info(f"Best Model param: {best.get('params_mb_prefix', 0):.2f} MB")
 
     # Save to JSON
     best_arch = {
-        "op_codes": best["op_codes"],
+        "op_codes": best.get("op_codes_prefix"),
         "width_codes": best["width_codes"],
         "fitness": best["fitness"],
-        "params_mb": best["params_mb"]
+        "params_mb": best.get("params_mb_prefix")
     }
     
     with open(args.output_path, "w") as f:
