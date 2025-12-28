@@ -67,3 +67,6 @@ result_*/
 
 # .pth
 **/*.pth
+
+# ./onnx
+**/*.onnx
