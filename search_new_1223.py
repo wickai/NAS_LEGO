@@ -1091,7 +1091,7 @@ def parse_args():
     p.add_argument("--layer_generations", default=8, type=int)
     p.add_argument("--layer_mutation", default=0.3, type=float)
     p.add_argument("--stagewise_width_search", action="store_true", default=True)
-    p.add_argument("--use_pareto", action="store_true", default=True, help="使用 pareto front 多目标优化 (SWAP ↑, ParamsMB ↓)")
+    p.add_argument("--use_pareto", action="store_true", default=False, help="使用 pareto front 多目标优化 (SWAP ↑, ParamsMB ↓)")
 
     # 训练参数
     p.add_argument("--train_batch", default=128, type=int)

@@ -19,11 +19,35 @@ from nas_common import (
     LayerwiseBlockES, EvolutionarySearch, count_parameters_in_MB
 )
 
-def load_imagenet_dataset(split: str):
+def load_imagenet_dataset(split: str, data_root: str = None, data_format: str = None):
     if split == 'validation':
         split = 'val'
+
+    if data_format == 'parquet':
+        if not data_root:
+            raise ValueError("DATA_ROOT must be provided when DATA_FORMAT is 'parquet'")
+        
+        # Determine file prefix based on split
+        file_prefix = 'train' if split == 'train' else 'validation'
+        pattern = os.path.join(data_root, f"{file_prefix}-*.parquet")
+        
+        print(f"[Loading Parquet] Split: {split}, Pattern: {pattern}")
+        
+        # Load the dataset using Hugging Face datasets library
+        hf_dataset = load_dataset(
+            "parquet",
+            data_files={split: pattern},
+            split=split
+        )
+        return hf_dataset
+
+    # Default/Legacy behavior (Arrow)
     # 关键路径：尝试从本地固定路径加载 Arrow 格式的 ImageNet 数据
-    local_path = os.path.join("/data/wk/kai/data/imagenet_arrow", split)
+    if data_root:
+        local_path = os.path.join(data_root, split)
+    else:
+        local_path = os.path.join("/data/wk/kai/data/imagenet_arrow", split)
+
     print("local_path", local_path)
     if os.path.exists(local_path):
         print(f"[✓] 使用本地数据集: {local_path}")
@@ -31,7 +55,7 @@ def load_imagenet_dataset(split: str):
     else:
         print("[⭳] 本地数据集不存在，正在从 Hugging Face Hub 加载...")
         # hf_dataset = load_dataset("imagenet-1k", split=split)
-        pass
+        raise FileNotFoundError(f"Dataset not found at {local_path} and fallback is disabled.")
     return hf_dataset
 
 class HuggingFaceImageNetDataset(torch.utils.data.Dataset):
@@ -67,6 +91,8 @@ def parse_args():
 
     # Dataset
     p.add_argument("--dataset", choices=["cifar10", "imagenet"], default="cifar10", help="Dataset to use for search")
+    p.add_argument("--data_root", type=str, default=None, help="Root directory for ImageNet data")
+    p.add_argument("--data_format", type=str, default=None, choices=['arrow', 'parquet'], help="Data format for ImageNet")
 
     # Search common
     p.add_argument("--search_mode", choices=["layer_ea", "global_ea"], default="layer_ea")
@@ -86,11 +112,15 @@ def parse_args():
     p.add_argument("--layer_generations", default=8, type=int)
     p.add_argument("--layer_mutation", default=0.3, type=float)
     p.add_argument("--stagewise_width_search", action="store_true", default=True)
-    p.add_argument("--use_pareto", action="store_true", default=True, help="使用 pareto front 多目标优化 (SWAP ↑, ParamsMB ↓)")
+    p.add_argument("--use_pareto", action="store_true", default=False, help="使用 pareto front 多目标优化 (SWAP ↑, ParamsMB ↓)")
     
     return p.parse_args()
 
 def main():
+    # Set cache dir if on specific machine
+    if os.path.exists("/mnt/sda/weizixiang/wk/data"):
+        os.environ["HF_DATASETS_CACHE"] = "/mnt/sda/weizixiang/wk/data/hf_cache"
+
     args = parse_args()
     setup_logger(args.log_path, args.log_name)
     logging.info("Args:\n" + json.dumps(vars(args), indent=4))
@@ -127,11 +157,11 @@ def main():
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         # Use train split for search
-        hf_dataset = load_imagenet_dataset('train')
+        hf_dataset = load_imagenet_dataset('train', data_root=args.data_root, data_format=args.data_format)
         search_ds = HuggingFaceImageNetDataset(hf_dataset, split='train', transform=search_transform)
 
     search_loader = torch.utils.data.DataLoader(search_ds, batch_size=args.search_batch,
-                                                shuffle=False, num_workers=2, pin_memory=True)
+                                                shuffle=False, num_workers=0, pin_memory=True)
     mini_inputs, _ = next(iter(search_loader))
     mini_inputs = mini_inputs.to(device)
 
