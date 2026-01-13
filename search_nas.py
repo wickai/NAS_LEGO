@@ -181,7 +181,7 @@ def main():
             n_generations=args.n_generations, swap_metric=swap, search_space=sp,
             device=device, num_inits=args.num_inits
         )
-        best = es.search(mini_inputs)
+        best = es.search(mini_inputs, n_blocks_to_search=args.n_blocks_to_search)
     t1 = time.time()
     
     # Ensure params_mb is present

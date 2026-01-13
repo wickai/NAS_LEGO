@@ -12,21 +12,33 @@ OUTPUT_DIR = "gridsearch_output"
 RESULTS_FILE = "grid_search_analysis_plots.png"
 
 def parse_filename(filename):
-    # Expected format: search_nblk{}_lpop{}_lgen{}.json
-    match = re.match(r"search_nblk(\d+)_lpop(\d+)_lgen(\d+)\.json", filename)
-    if match:
-        return int(match.group(1)), int(match.group(2)), int(match.group(3))
-    return None, None, None
+    # Expected format: search_nblk{}_[lpop|pop]{}_[lgen|gen]{}[__mode].json
+    # Handle global_ea format: search_nblk5_pop10_gen50__global_ea.json
+    match_global = re.match(r"search_nblk(\d+)_pop(\d+)_gen(\d+)(?:__(\w+))?\.json", filename)
+    if match_global:
+        mode = match_global.group(4) if match_global.group(4) else "default"
+        return int(match_global.group(1)), int(match_global.group(2)), int(match_global.group(3)), mode
+        
+    # Handle layer_ea format: search_nblk5_lpop5_lgen2__layer_ea.json
+    match_layer = re.match(r"search_nblk(\d+)_lpop(\d+)_lgen(\d+)(?:__(\w+))?\.json", filename)
+    if match_layer:
+        mode = match_layer.group(4) if match_layer.group(4) else "default"
+        return int(match_layer.group(1)), int(match_layer.group(2)), int(match_layer.group(3)), mode
+        
+    return None, None, None, None
 
-def load_data(directory, target_nblk=5):
+def load_data(directory, target_nblk=5, target_mode=None):
     data = []
     files = os.listdir(directory)
     for f in files:
         if not f.endswith(".json"):
             continue
             
-        nblk, lpop, lgen = parse_filename(f)
+        nblk, pop, gen, mode = parse_filename(f)
         if nblk is None or nblk != target_nblk:
+            continue
+        
+        if target_mode and mode != target_mode:
             continue
             
         path = os.path.join(directory, f)
@@ -38,8 +50,9 @@ def load_data(directory, target_nblk=5):
                 
                 data.append({
                     "N Blocks": nblk,
-                    "Layer Population": lpop,
-                    "Layer Generations": lgen,
+                    "Population": pop,
+                    "Generations": gen,
+                    "Mode": mode,
                     "Fitness": fitness,
                     "Params (MB)": params
                 })
@@ -52,6 +65,16 @@ def visualize(df, nblk=5):
     if df.empty:
         print("No data found!")
         return
+    
+    # Handle duplicates
+    if df.duplicated(subset=["Population", "Generations"]).any():
+        print("Warning: Duplicate entries found for same Population/Generations. Averaging...")
+        df = df.groupby(["Population", "Generations"]).agg({
+            "Fitness": "mean",
+            "Params (MB)": "mean",
+            "N Blocks": "first",
+            "Mode": "first"
+        }).reset_index()
 
     # Create a figure with subplots
     fig = plt.figure(figsize=(18, 12))
@@ -60,13 +83,13 @@ def visualize(df, nblk=5):
 
     # 1. Heatmap of Fitness
     ax1 = fig.add_subplot(gs[0, 0])
-    pivot_fitness = df.pivot(index="Layer Population", columns="Layer Generations", values="Fitness")
+    pivot_fitness = df.pivot(index="Population", columns="Generations", values="Fitness")
     sns.heatmap(pivot_fitness, annot=True, fmt=".0f", cmap="viridis", ax=ax1)
     ax1.set_title("Fitness vs Population & Generations")
 
     # 2. Heatmap of Params
     ax2 = fig.add_subplot(gs[0, 1])
-    pivot_params = df.pivot(index="Layer Population", columns="Layer Generations", values="Params (MB)")
+    pivot_params = df.pivot(index="Population", columns="Generations", values="Params (MB)")
     sns.heatmap(pivot_params, annot=True, fmt=".4f", cmap="magma_r", ax=ax2) 
     ax2.set_title("Params (MB) vs Population & Generations")
 
@@ -76,8 +99,8 @@ def visualize(df, nblk=5):
         data=df, 
         x="Params (MB)", 
         y="Fitness", 
-        hue="Layer Generations", 
-        size="Layer Population",
+        hue="Generations", 
+        size="Population",
         sizes=(50, 400),
         palette="deep",
         ax=ax3
@@ -89,13 +112,16 @@ def visualize(df, nblk=5):
         ax3.text(
             row["Params (MB)"], 
             row["Fitness"], 
-            f"P{int(row['Layer Population'])}G{int(row['Layer Generations'])}",
+            f"P{int(row['Population'])}G{int(row['Generations'])}",
             fontsize=9,
             ha='right'
         )
 
     plt.tight_layout()
-    output_path = os.path.join(OUTPUT_DIR, f"analysis_summary_nblk{nblk}.png")
+    # Include mode in filename if consistent, otherwise 'mixed'
+    modes = df["Mode"].unique()
+    mode_str = modes[0] if len(modes) == 1 else "mixed"
+    output_path = os.path.join(OUTPUT_DIR, f"analysis_summary_nblk{nblk}_{mode_str}.png")
     plt.savefig(output_path)
     print(f"Analysis plot saved to {output_path}")
     
@@ -113,8 +139,9 @@ import argparse
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Visualize Grid Search Results")
     parser.add_argument("--n_blocks", type=int, default=5, help="Number of blocks to filter")
+    parser.add_argument("--search_mode", type=str, default="global_ea", choices=["layer_ea", "global_ea"], help="Filter by search mode (e.g. global_ea)")
     args = parser.parse_args()
     
     target_nblk = args.n_blocks
-    df = load_data(OUTPUT_DIR, target_nblk=target_nblk)
+    df = load_data(OUTPUT_DIR, target_nblk=target_nblk, target_mode=args.search_mode)
     visualize(df, nblk=target_nblk)

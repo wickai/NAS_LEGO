@@ -414,10 +414,16 @@ class EvolutionarySearch:
         self.num_inits = num_inits
         self.eval_loader = eval_loader
 
-    def _score(self, op_codes, width_codes, inputs):
+    def _score(self, op_codes, width_codes, inputs, n_blocks=None):
         scores = []
         for _ in range(self.num_inits):
-            model = self.search_space.get_model(op_codes, width_codes).to(self.device)
+            if n_blocks is not None:
+                # 使用前缀模型
+                model = self.search_space.get_prefix_model(op_codes, width_codes).to(self.device)
+            else:
+                # 完整模型
+                model = self.search_space.get_model(op_codes, width_codes).to(self.device)
+                
             for p in model.parameters():
                 if p.dim() > 1:
                     nn.init.kaiming_normal_(p)
@@ -428,12 +434,25 @@ class EvolutionarySearch:
                 scores.append(s)
         return float(np.mean(scores))
 
-    def search(self, inputs):
+    def search(self, inputs, n_blocks_to_search=None):
+        # 如果指定了搜索层数，限制 op_codes 的长度
+        if n_blocks_to_search is not None:
+            logging.info(f"Global EA restricted to first {n_blocks_to_search} blocks.")
+        
         pop = []
         for _ in range(self.population_size):
+            full_ops = self.search_space.random_op_codes()
+            full_widths = self.search_space.random_width_codes()
+            
+            # 如果限制层数，截断 op_codes
+            if n_blocks_to_search is not None:
+                op_codes = full_ops[:n_blocks_to_search]
+            else:
+                op_codes = full_ops
+                
             pop.append({
-                "op_codes": self.search_space.random_op_codes(),
-                "width_codes": self.search_space.random_width_codes(),
+                "op_codes": op_codes,
+                "width_codes": full_widths, # width codes 对应 stage，不需要按 block 截断，或者由 get_prefix_model 处理
                 "fitness": None
             })
 
@@ -441,7 +460,7 @@ class EvolutionarySearch:
             logging.info(f"=== Generation {g+1}/{self.n_generations} ===")
             for i, ind in enumerate(pop):
                 if ind["fitness"] is None:
-                    fit = self._score(ind["op_codes"], ind["width_codes"], inputs)
+                    fit = self._score(ind["op_codes"], ind["width_codes"], inputs, n_blocks=n_blocks_to_search)
                     ind["fitness"] = fit
                     logging.info(f"  [Ind-{i+1}] fitness(SWAP): {fit:.3f}")
 
@@ -453,17 +472,34 @@ class EvolutionarySearch:
                 p1, p2 = random.choice(next_gen), random.choice(next_gen)
                 child_ops = self.crossover(p1["op_codes"], p2["op_codes"])
                 child_wds = self.crossover(p1["width_codes"], p2["width_codes"])
+                
+                # 变异时注意保持长度
                 child_ops = self.search_space.mutate_op_codes(child_ops, self.mutation_rate)
+                # 如果是截断模式，mutate 可能会使用 full length 的逻辑，需要确保 mutate_op_codes 能够处理任意长度
+                # MobileNetSearchSpace.mutate_op_codes 实现是遍历输入 codes，所以没问题
+                
                 child_wds = self.search_space.mutate_width_codes(child_wds, self.mutation_rate)
                 next_gen.append({"op_codes": child_ops, "width_codes": child_wds, "fitness": None})
             pop = next_gen
 
         for ind in pop:
             if ind["fitness"] is None:
-                ind["fitness"] = self._score(ind["op_codes"], ind["width_codes"], inputs)
+                ind["fitness"] = self._score(ind["op_codes"], ind["width_codes"], inputs, n_blocks=n_blocks_to_search)
 
         pop.sort(key=lambda x: x["fitness"], reverse=True)
-        return pop[0]
+        
+        # 结果处理：确保返回正确的格式
+        best = pop[0]
+        # 如果是限制层数模式，计算一次 params_mb_prefix
+        if n_blocks_to_search is not None:
+             model = self.search_space.get_prefix_model(best["op_codes"], best["width_codes"])
+             best["params_mb_prefix"] = count_parameters_in_MB(model)
+             best["op_codes_prefix"] = best["op_codes"] # 这里的 op_codes 已经是截断后的
+        else:
+             # 完整模式，为了兼容性也加上 prefix 字段
+             best["op_codes_prefix"] = best["op_codes"]
+             
+        return best
 
     @staticmethod
     def crossover(c1, c2):
