@@ -9,7 +9,7 @@ LAYER_GENERATIONS=8
 N_BLOCKS_TO_SEARCH=20
 
 # Run search
-CUDA_VISIBLE_DEVICES=1 uv run python search_nas.py \
+CUDA_VISIBLE_DEVICES=0 uv run python search_nas.py \
     --population_size $POPULATION_SIZE \
     --n_generations $N_GENERATIONS \
     --layer_population $LAYER_POPULATION \
