@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # Default parameters
-ARCH_PATH="./test_arch.json"
+ARCH_PATH="./gridsearch_output/search_nblk5_pop48_gen300__global_ea.json"
 TRAIN_EPOCHS=30
 TRAIN_BATCH=128
 LR=0.05
-LOG_NAME="train_cifar_4card.log"
+LOG_NAME="train_cifar_4card_global5-48-300_test.log"
 
 # Check if --distributed flag is passed
 DISTRIBUTED=true
@@ -13,8 +13,8 @@ NUM_GPUS=1
 
 for arg in "$@"
 do
-    if [ "$arg" == "--distributed" ]; then
-        DISTRIBUTED=true
+    if [ "$arg" == "--no-distributed" ]; then
+        DISTRIBUTED=false
     fi
     # Simple check for log_name in args to avoid overwriting if user passes it directly
     if [[ "$arg" == "--log_name"* ]]; then
@@ -26,12 +26,12 @@ done
 
 # If distributed, use torchrun
 if [ "$DISTRIBUTED" = true ]; then
-    # Use last 4 GPUs (indices 4,5,6,7) from 8 cards
-    export CUDA_VISIBLE_DEVICES=0,1,2,3
+    export CUDA_VISIBLE_DEVICES=1,2,3,4
     NUM_GPUS=4
     echo "Running Distributed Training on GPUs $CUDA_VISIBLE_DEVICES ($NUM_GPUS cards)..."
     
     uv run torchrun --nproc_per_node=$NUM_GPUS train_cifar.py \
+        --distributed \
         --arch_path $ARCH_PATH \
         --train_epochs $TRAIN_EPOCHS \
         --train_batch $TRAIN_BATCH \

@@ -16,5 +16,13 @@
         1
     ],
     "fitness": 2049118.0,
-    "params_mb": 0.106954
+    "params_mb": 0.106954,
+    "params": 106954,
+    "params_str": "106.95K",
+    "flops": 66677120,
+    "flops_str": "66.68M",
+    "total_conv_fc_flops": 60549504,
+    "total_conv_fc_flops_str": "60.55M",
+    "acts": 2286198,
+    "acts_str": "2.29M"
 }

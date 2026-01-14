@@ -8,6 +8,7 @@ import random
 import logging
 import argparse
 import json
+import copy
 
 import numpy as np
 import torch
@@ -868,6 +869,10 @@ def train_and_eval(model, train_loader, val_loader, test_loader, device, args, r
     criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
     optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    
+    best_val_top1 = 0.0
+    best_epoch = 0
+    best_model_wts = copy.deepcopy(model.state_dict())
 
     for epoch in range(epochs):
         if args.distributed:
@@ -904,6 +909,10 @@ def train_and_eval(model, train_loader, val_loader, test_loader, device, args, r
         val_top1, val_top5 = 0.0, 0.0
         if rank == 0:
             val_top1, val_top5 = evaluate(model, val_loader, device)
+            if val_top1 > best_val_top1:
+                best_val_top1 = val_top1
+                best_epoch = epoch + 1
+                best_model_wts = copy.deepcopy(model.state_dict())
         
         current_lr = optimizer.param_groups[0]['lr']
         scheduler.step()
@@ -913,12 +922,21 @@ def train_and_eval(model, train_loader, val_loader, test_loader, device, args, r
                          f"Loss={train_loss:.3f}, "
                          f"LR={current_lr:.5f}, "
                          f"Train@1={train_acc_top1*100:.2f}%, "
-                         f"Val@1={val_top1*100:.2f}%, Val@5={val_top5*100:.2f}%")
+                         f"Val@1={val_top1*100:.2f}%, Val@5={val_top5*100:.2f}%, "
+                         f"BestVal@1={best_val_top1*100:.2f}%")
 
     final_top1 = 0.0
     if rank == 0:
+        # Load best model weights
+        model.load_state_dict(best_model_wts)
+        
+        # Verify Validation Accuracy with best model
+        final_val_top1, final_val_top5 = evaluate(model, val_loader, device)
+        logging.info(f"Final Validation (Best Model from Epoch {best_epoch}): "
+                     f"Val@1={final_val_top1*100:.2f}%, Val@5={final_val_top5*100:.2f}%")
+        
         final_top1, final_top5 = evaluate(model, test_loader, device)
-        logging.info(f"Final Test Accuracy: Top1={final_top1*100:.2f}%, Top5={final_top5*100:.2f}%")
+        logging.info(f"Final Test Accuracy (Best Val Model): Top1={final_top1*100:.2f}%, Top5={final_top5*100:.2f}%")
         
     return final_top1
 

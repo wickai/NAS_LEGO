@@ -1,0 +1,38 @@
+{
+    "op_codes": [
+        6,
+        15,
+        15,
+        7,
+        15,
+        14,
+        7,
+        13,
+        14,
+        14,
+        7,
+        14,
+        14,
+        6,
+        5
+    ],
+    "width_codes": [
+        2,
+        1,
+        2,
+        2,
+        2,
+        2,
+        2
+    ],
+    "fitness": 2835270.0,
+    "params_mb": 1.195858,
+    "params": 1195858,
+    "params_str": "1.20M",
+    "flops": 251922320,
+    "flops_str": "251.92M",
+    "total_conv_fc_flops": 243095440,
+    "total_conv_fc_flops_str": "243.10M",
+    "acts": 4006000,
+    "acts_str": "4.01M"
+}
