@@ -13,8 +13,12 @@ parser.add_argument("--search_mode", type=str, default="global_ea", choices=["la
 args = parser.parse_args()
 
 # Configuration
+# Layer-wise 枚举贪心 （Echo: 枚举会退化）
+
+# Layer EA （进化-不是枚举--有变异）（Echo: 变异也会退化）
 LAYER_POPULATION_LIST = [5, 10, 16, 20, 40]
 LAYER_GENERATIONS_LIST = [2, 4, 8, 12]
+# Global EA
 POPULATION_SIZE_LIST = [10, 16, 32, 48]
 N_GENERATIONS_LIST = [50, 100, 200, 300]
 

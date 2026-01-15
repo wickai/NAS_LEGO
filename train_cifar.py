@@ -8,8 +8,10 @@ import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import pandas as pd
 from torchvision import datasets, transforms
 import sys
+import ast
 
 # Import from common
 from nas_common import (
@@ -26,8 +28,10 @@ def parse_args():
     p.add_argument("--seed", default=42, type=int)
     
     # Architecture source
-    p.add_argument("--arch_path", required=True, type=str, help="Path to the architecture JSON file")
-
+    p.add_argument("--arch_path", type=str, help="Path to the architecture JSON file")
+    p.add_argument("--run_id", type=str, help="Run ID from CSV to load architecture")
+    p.add_argument("--csv_path", default="./gridsearch_output/all_results.csv", type=str, help="Path to the results CSV")
+    
     # Training parameters
     p.add_argument("--train_batch", default=128, type=int)
     p.add_argument("--train_epochs", default=200, type=int)
@@ -86,28 +90,72 @@ def main():
         logging.info(f"Using device: {device}")
 
     # Load Architecture
-    if not os.path.exists(args.arch_path):
-        logging.error(f"Architecture file not found: {args.arch_path}")
-        sys.exit(1)
+    op_codes = None
+    width_codes = None
+    
+    if args.run_id:
+        if not os.path.exists(args.csv_path):
+            logging.error(f"CSV file not found: {args.csv_path}")
+            sys.exit(1)
+            
+        try:
+            df = pd.read_csv(args.csv_path)
+            row = df[df['id'].astype(str) == str(args.run_id)]
+            
+            if row.empty:
+                logging.error(f"Run ID {args.run_id} not found in {args.csv_path}")
+                sys.exit(1)
+            
+            # Extract codes
+            # They are stored as strings in CSV, so we need to parse them
+            op_codes_str = row.iloc[0]['op_codes']
+            width_codes_str = row.iloc[0]['width_codes']
+            
+            try:
+                op_codes = ast.literal_eval(op_codes_str)
+                width_codes = ast.literal_eval(width_codes_str)
+            except (ValueError, SyntaxError) as e:
+                # Fallback if simple eval fails (e.g. if json formatted)
+                try:
+                    op_codes = json.loads(op_codes_str)
+                    width_codes = json.loads(width_codes_str)
+                except Exception:
+                    logging.error(f"Failed to parse codes from CSV: op={op_codes_str}, width={width_codes_str}")
+                    sys.exit(1)
+                    
+            if args.local_rank == 0:
+                logging.info(f"Loaded architecture from CSV (ID={args.run_id})")
+                
+        except Exception as e:
+            logging.error(f"Error reading CSV or parsing ID: {e}")
+            sys.exit(1)
+            
+    elif args.arch_path:
+        if not os.path.exists(args.arch_path):
+            logging.error(f"Architecture file not found: {args.arch_path}")
+            sys.exit(1)
+            
+        with open(args.arch_path, "r") as f:
+            arch_data = json.load(f)
         
-    with open(args.arch_path, "r") as f:
-        arch_data = json.load(f)
-    
-    if args.local_rank == 0:
-        logging.info(f"Loaded architecture from {args.arch_path}")
-    
-    op_codes = arch_data.get('op_codes')
-    if op_codes is None:
-        op_codes = arch_data.get('op_codes_prefix')
         if args.local_rank == 0:
-            logging.info("Using 'op_codes_prefix' from JSON.")
-    
+            logging.info(f"Loaded architecture from {args.arch_path}")
+        
+        op_codes = arch_data.get('op_codes')
+        if op_codes is None:
+            op_codes = arch_data.get('op_codes_prefix')
+            if args.local_rank == 0:
+                logging.info("Using 'op_codes_prefix' from JSON.")
+                
+        width_codes = arch_data['width_codes']
+    else:
+        logging.error("Either --arch_path or --run_id must be provided.")
+        sys.exit(1)
+
     if op_codes is None:
-        logging.error("No 'op_codes' or 'op_codes_prefix' found in JSON.")
+        logging.error("No 'op_codes' or 'op_codes_prefix' found.")
         sys.exit(1)
         
-    width_codes = arch_data['width_codes']
-
     if args.local_rank == 0:
         logging.info(f"  op_codes: {op_codes}")
         logging.info(f"  width_codes: {width_codes}")
