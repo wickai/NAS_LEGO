@@ -34,5 +34,6 @@
     "total_conv_fc_flops": 211657984,
     "total_conv_fc_flops_str": "211.66M",
     "acts": 3602442,
-    "acts_str": "3.60M"
+    "acts_str": "3.60M",
+    "test_acc_top1": 87.08
 }
