@@ -510,7 +510,83 @@ class EvolutionarySearch:
         return c1[:p1] + c2[p1:p2] + c1[p2:]
 
 
-# ============ 7.5) Pareto Front 工具函数 ============
+# ============ 7.5) Random Search ============
+
+class RandomSearch:
+    def __init__(self, search_space, swap_metric, device, n_samples=100, num_inits=1):
+        self.search_space = search_space
+        self.swap_metric = swap_metric
+        self.device = device
+        self.n_samples = n_samples
+        self.num_inits = num_inits
+
+    def _score(self, op_codes, width_codes, inputs, n_blocks=None):
+        scores = []
+        for _ in range(self.num_inits):
+            if n_blocks is not None:
+                # 使用前缀模型
+                model = self.search_space.get_prefix_model(op_codes, width_codes).to(self.device)
+            else:
+                # 完整模型
+                model = self.search_space.get_model(op_codes, width_codes).to(self.device)
+                
+            for p in model.parameters():
+                if p.dim() > 1:
+                    nn.init.kaiming_normal_(p)
+            if is_degenerate_head(model, inputs, self.device):
+                scores.append(-1e12)
+            else:
+                s = self.swap_metric.evaluate(model, inputs)
+                scores.append(s)
+        return float(np.mean(scores))
+
+    def search(self, inputs, n_blocks_to_search=None):
+        # 如果指定了搜索层数，限制 op_codes 的长度
+        if n_blocks_to_search is not None:
+            logging.info(f"Random Search restricted to first {n_blocks_to_search} blocks.")
+        
+        best_arch = None
+        best_fitness = -float('inf')
+        
+        logging.info(f"=== Random Search Start ({self.n_samples} samples) ===")
+        
+        for i in range(self.n_samples):
+            full_ops = self.search_space.random_op_codes()
+            full_widths = self.search_space.random_width_codes()
+            
+            # 如果限制层数，截断 op_codes
+            if n_blocks_to_search is not None:
+                op_codes = full_ops[:n_blocks_to_search]
+            else:
+                op_codes = full_ops
+            
+            fitness = self._score(op_codes, full_widths, inputs, n_blocks=n_blocks_to_search)
+            logging.info(f"  [Sample-{i+1}] fitness(SWAP): {fitness:.3f}")
+            
+            if fitness > best_fitness:
+                best_fitness = fitness
+                best_arch = {
+                    "op_codes": op_codes,
+                    "width_codes": full_widths,
+                    "fitness": fitness
+                }
+                logging.info(f"  -> New Best found! fitness={fitness:.3f}")
+        
+        # 结果处理：确保返回正确的格式
+        best = best_arch
+        # 如果是限制层数模式，计算一次 params_mb_prefix
+        if n_blocks_to_search is not None:
+             model = self.search_space.get_prefix_model(best["op_codes"], best["width_codes"])
+             best["params_mb_prefix"] = count_parameters_in_MB(model)
+             best["op_codes_prefix"] = best["op_codes"] # 这里的 op_codes 已经是截断后的
+        else:
+             # 完整模式，为了兼容性也加上 prefix 字段
+             best["op_codes_prefix"] = best["op_codes"]
+             
+        return best
+
+
+# ============ 7.6) Pareto Front 工具函数 ============
 
 def dominates_dict(a: dict, b: dict) -> bool:
     """

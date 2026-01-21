@@ -95,7 +95,7 @@ def parse_args():
     p.add_argument("--data_format", type=str, default=None, choices=['arrow', 'parquet'], help="Data format for ImageNet")
 
     # Search common
-    p.add_argument("--search_mode", choices=["layer_ea", "global_ea"], default="layer_ea")
+    p.add_argument("--search_mode", choices=["layer_ea", "global_ea", "random"], default="layer_ea")
     p.add_argument("--search_batch", default=64, type=int)
     p.add_argument("--num_inits", default=1, type=int)
     p.add_argument("--small_input", action="store_true", default=True)
@@ -175,6 +175,18 @@ def main():
             use_pareto=args.use_pareto
         )
         best = les.search(mini_inputs, n_blocks_to_search=args.n_blocks_to_search)
+    elif args.search_mode == "random":
+        # For random search, we can reuse n_generations * population_size as total samples
+        # or add a specific argument. Here we use n_generations * population_size
+        n_samples = args.n_generations * args.population_size
+        logging.info(f"Using Random Search with {n_samples} samples (derived from gen*pop)")
+        
+        from nas_common import RandomSearch
+        rs = RandomSearch(
+            search_space=sp, swap_metric=swap, device=device,
+            n_samples=n_samples, num_inits=args.num_inits
+        )
+        best = rs.search(mini_inputs, n_blocks_to_search=args.n_blocks_to_search)
     else:
         es = EvolutionarySearch(
             population_size=args.population_size, mutation_rate=args.mutation_rate,
