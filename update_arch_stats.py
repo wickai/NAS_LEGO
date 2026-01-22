@@ -115,6 +115,7 @@ def main():
     parser = argparse.ArgumentParser("Update Architecture JSON with Stats")
     parser.add_argument("--arch_path", required=True, type=str, help="Path to the architecture JSON file or directory")
     parser.add_argument("--recursive", action="store_true", help="If arch_path is directory, recursively update all .json files")
+    parser.add_argument("--file_prefix", type=str, default=None, help="Only process files starting with this prefix (when recursive)")
     parser.add_argument("--num_classes", default=10, type=int)
     parser.add_argument("--small_input", action="store_true", default=True, help="Use 32x32 input (CIFAR)")
     parser.add_argument("--input_size", default=32, type=int, help="Input image size")
@@ -127,13 +128,21 @@ def main():
             sys.exit(1)
             
         print(f"Scanning directory: {args.arch_path}")
+        if args.file_prefix:
+            print(f"Filtering files with prefix: '{args.file_prefix}'")
+            
         count = 0
         for root, dirs, files in os.walk(args.arch_path):
             for file in files:
-                if file.endswith(".json"):
-                    full_path = os.path.join(root, file)
-                    if update_json_with_stats(full_path, args.num_classes, args.small_input, args.input_size):
-                        count += 1
+                if not file.endswith(".json"):
+                    continue
+                    
+                if args.file_prefix and not file.startswith(args.file_prefix):
+                    continue
+                    
+                full_path = os.path.join(root, file)
+                if update_json_with_stats(full_path, args.num_classes, args.small_input, args.input_size):
+                    count += 1
         print(f"Processed {count} files.")
         
     else:
