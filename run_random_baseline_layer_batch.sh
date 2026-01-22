@@ -8,7 +8,7 @@ for n in 5 10 15 20; do
     echo "Running random baseline (Layer EA Ref) for n_blocks=$n..."
     echo "========================================================"
     
-    uv run python run_random_baseline_search.py --n_blocks $n --target_mode layer_ea
+    uv run python run_random_baseline_search.py --n_blocks $n --target_mode layer_ea --num_seeds 3
     
     echo "Finished batch for n_blocks=$n"
     echo ""
