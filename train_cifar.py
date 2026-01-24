@@ -39,6 +39,7 @@ def parse_args():
     p.add_argument("--small_input", action="store_true", default=True)
     p.add_argument("--num_classes", default=10, type=int)
     p.add_argument("--use_cutout", action="store_true", default=True)
+    p.add_argument("--no-cutout", dest="use_cutout", action="store_false", help="Disable cutout")
     p.add_argument("--cutout_length", default=16, type=int)
     p.add_argument("--mixup_alpha", default=0.2, type=float)
     p.add_argument("--label_smoothing", default=0.1, type=float)

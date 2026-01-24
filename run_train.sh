@@ -44,7 +44,7 @@ CMD_ARGS=$(construct_args)
 
 # If distributed, use torchrun
 if [ "$DISTRIBUTED" = true ]; then
-    export CUDA_VISIBLE_DEVICES=1,2,3,4
+    export CUDA_VISIBLE_DEVICES=4,5,6,7
     NUM_GPUS=4
     echo "Running Distributed Training on GPUs $CUDA_VISIBLE_DEVICES ($NUM_GPUS cards)..."
     if [ -n "$RUN_ID" ]; then
